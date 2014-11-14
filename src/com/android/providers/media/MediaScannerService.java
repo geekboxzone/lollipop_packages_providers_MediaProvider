@@ -101,11 +101,13 @@ public class MediaScannerService extends Service implements Runnable
                     openDatabase(volumeName);
                 }
 
-                MediaScanner scanner = createMediaScanner();
-                scanner.scanDirectories(directories, volumeName);
-            } catch (Exception e) {
-                Log.e(TAG, "exception in MediaScanner.scan()", e);
-            }
+            MediaScanner scanner = createMediaScanner();
+	    if(directories!=null){
+              scanner.scanDirectories(directories, volumeName);
+	    }
+        } catch (Exception e) {
+            Log.e(TAG, "exception in MediaScanner.scan()", e);
+        }
 
             getContentResolver().delete(scanUri, null, null);
 
@@ -235,7 +237,8 @@ public class MediaScannerService extends Service implements Runnable
         {
             Bundle arguments = (Bundle) msg.obj;
             String filePath = arguments.getString("filepath");
-            
+            String path = arguments.getString("path");
+
             try {
                 if (filePath != null) {
                     IBinder binder = arguments.getIBinder("listener");
@@ -263,14 +266,18 @@ public class MediaScannerService extends Service implements Runnable
                     }
                     else if (MediaProvider.EXTERNAL_VOLUME.equals(volume)) {
                         // scan external storage volumes
-                        directories = mExternalStoragePaths;
+			if (path == null) {
+                          directories = mExternalStoragePaths;
+                        } else {
+                            directories = new String[] {path};
+                        }
                     }
 
                     if (directories != null) {
-                        if (false) Log.d(TAG, "start scanning volume " + volume + ": "
+                        if (true) Log.d(TAG, "start scanning volume " + volume + ": "
                                 + Arrays.toString(directories));
                         scan(directories, volume);
-                        if (false) Log.d(TAG, "done scanning volume " + volume);
+                        if (true) Log.d(TAG, "done scanning volume " + volume);
                     }
                 }
             } catch (Exception e) {

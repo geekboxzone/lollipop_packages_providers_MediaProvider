@@ -24,6 +24,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.util.Log;
+import android.os.SystemProperties;
 
 import java.io.File;
 import java.io.IOException;
@@ -33,18 +34,28 @@ public class MediaScannerReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        final String action = intent.getAction();
-        final Uri uri = intent.getData();
-        if (Intent.ACTION_BOOT_COMPLETED.equals(action)) {
-            // Scan both internal and external storage
-            scan(context, MediaProvider.INTERNAL_VOLUME);
-            scan(context, MediaProvider.EXTERNAL_VOLUME);
-
-        } else {
+	String externalStoragePath = Environment.getExternalStorageDirectory().getPath();
+        String action = intent.getAction();
+        Uri uri = intent.getData();
+        if (action.equals(Intent.ACTION_BOOT_COMPLETED)) {
+            // scan internal storage
+            scan(context, MediaProvider.INTERNAL_VOLUME, null);
+			scan(context, MediaProvider.EXTERNAL_VOLUME, "/mnt/external_sd");//scan sdcard and udisk when boot to prevent external.db is correct
+			scan(context, MediaProvider.EXTERNAL_VOLUME, "/mnt/usb_storage");
+			scan(context, MediaProvider.EXTERNAL_VOLUME, externalStoragePath);
+        } 
+		else if(action.equals(Intent.ACTION_USER_SWITCHED))
+		{
+			Log.d(TAG,"----MediaScannerReceiver get ACTION_USER_SWITCHED---");
+			scan(context, MediaProvider.EXTERNAL_VOLUME, "/mnt/external_sd");//scan public storage to update databases
+			scan(context, MediaProvider.EXTERNAL_VOLUME, "/mnt/usb_storage");
+			scan(context, MediaProvider.EXTERNAL_VOLUME, "/mnt/internal_sd");
+		}
+		else {
             if (uri.getScheme().equals("file")) {
                 // handle intents related to external storage
                 String path = uri.getPath();
-                String externalStoragePath = Environment.getExternalStorageDirectory().getPath();
+                //String externalStoragePath = Environment.getExternalStorageDirectory().getPath();
                 String legacyPath = Environment.getLegacyExternalStorageDirectory().getPath();
 
                 try {
@@ -58,20 +69,28 @@ public class MediaScannerReceiver extends BroadcastReceiver {
                 }
 
                 Log.d(TAG, "action: " + action + " path: " + path);
+                String packageName = intent.getStringExtra("package");
                 if (Intent.ACTION_MEDIA_MOUNTED.equals(action)) {
                     // scan whenever any volume is mounted
-                    scan(context, MediaProvider.EXTERNAL_VOLUME);
+                    scan(context, MediaProvider.EXTERNAL_VOLUME, path);
                 } else if (Intent.ACTION_MEDIA_SCANNER_SCAN_FILE.equals(action) &&
-                        path != null && path.startsWith(externalStoragePath + "/")) {
-                    scanFile(context, path);
+                        path != null && (path.startsWith(externalStoragePath + "/") ||
+                        		"RockExplorer".equals(packageName))) {
+                	File file = new File(path);
+                	if(file != null && file.isDirectory()){
+                		scan(context,MediaProvider.EXTERNAL_VOLUME, path);
+                	}else{
+                		scanFile(context, path);
+                	}
                 }
             }
         }
     }
 
-    private void scan(Context context, String volume) {
+    private void scan(Context context, String volume, String path) {
         Bundle args = new Bundle();
         args.putString("volume", volume);
+        args.putString("path", path);
         context.startService(
                 new Intent(context, MediaScannerService.class).putExtras(args));
     }    

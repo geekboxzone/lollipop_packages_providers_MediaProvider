@@ -108,6 +108,7 @@ import java.util.Locale;
 import java.util.PriorityQueue;
 import java.util.Stack;
 
+import android.os.SystemProperties;
 /**
  * Media content provider. See {@link android.provider.MediaStore} for details.
  * Separate databases are kept for each external storage card we see (using the
@@ -119,9 +120,17 @@ public class MediaProvider extends ContentProvider {
     private static final Uri ALBUMART_URI = Uri.parse("content://media/external/audio/albumart");
     private static final int ALBUM_THUMB = 1;
     private static final int IMAGE_THUMB = 2;
-
+    private static class AlbumObj{
+		
+	public String match;
+	public long albumId;
+	AlbumObj(String m,long id){
+		match = m;
+		albumId = id;
+		}
+	}
     private static final HashMap<String, String> sArtistAlbumsMap = new HashMap<String, String>();
-    private static final HashMap<String, String> sFolderArtMap = new HashMap<String, String>();
+    private static final HashMap<String, AlbumObj> sFolderArtMap = new HashMap<String, AlbumObj>();
 
     /** Resolved canonical path to external storage. */
     private static final String sExternalPath;
@@ -249,10 +258,13 @@ public class MediaProvider extends ContentProvider {
                         StorageVolume.EXTRA_STORAGE_VOLUME);
                 // If primary external storage is ejected, then remove the external volume
                 // notify all cursors backed by data on that volume.
-                if (storage.getPath().equals(mExternalStoragePaths[0])) {
-                    detachVolume(Uri.parse("content://media/external"));
+                if (storage == null || storage.getPath() == null) {
+                    // must be usb disk, do nonthing.
+                      Log.e(TAG, "ignore null storage");
+                } else if (storage.getPath().equals(mExternalStoragePaths[0])) {
+                    /*detachVolume(Uri.parse("content://media/external"));
                     sFolderArtMap.clear();
-                    MiniThumbFile.reset();
+                    MiniThumbFile.reset();*/
                 } else {
                     // If secondary external storage is ejected, then we delete all database
                     // entries for that storage from the files table.
@@ -265,6 +277,15 @@ public class MediaProvider extends ContentProvider {
                     Uri uri = Uri.parse("file://" + storage.getPath());
                     if (database != null) {
                         try {
+                                Log.d("zzz","---receive ACTION_MEDIA_EJECT,path=" + storage.getPath());
+                                if ("true".equals(SystemProperties.get("sys.MediaProvider.cancel.update"))) {// set by MountService when shutdown
+                                    Log.d("zzz","-----MediaProvider receice sdcard reject,but sys.MediaProvider.cancel.update is set.so cancel update external.db---");
+                                    return;
+                                }
+                                if (("true".equals(SystemProperties.get("sys.underUmsMode.enable")))||(Environment.MEDIA_SHARED.equals(mStorageManager.getVolumeState(storage.getPath())))) {
+                                    	Log.d("zzz","----MediaProvider receice reject,but MountService trying to share volumes, do not update external.db---");
+                                    	return;
+                                }
                             // Send media scanner started and stopped broadcasts for apps that rely
                             // on these Intents for coarse grained media database notifications.
                             context.sendBroadcast(
@@ -586,9 +607,11 @@ public class MediaProvider extends ContentProvider {
         iFilter.addDataScheme("file");
         context.registerReceiver(mUnmountReceiver, iFilter);
 
-        StorageManager storageManager =
-                (StorageManager)context.getSystemService(Context.STORAGE_SERVICE);
-        mExternalStoragePaths = storageManager.getVolumePaths();
+        mCaseInsensitivePaths = true;
+
+      //  storageManager =
+       //         (StorageManager)context.getSystemService(Context.STORAGE_SERVICE);
+        mExternalStoragePaths = mStorageManager.getVolumePaths();
 
         // open external database if external storage is mounted
         String state = Environment.getExternalStorageState();
@@ -668,7 +691,91 @@ public class MediaProvider extends ContentProvider {
             }
         };
 
+        StorageVolume[] volumeList = mStorageManager.getVolumeList();
+        StorageVolume externalvolume = null;
+        for (int i = 0; i < volumeList.length; i++) {
+            if(volumeList[i].getPath().equals("/mnt/external_sd") || volumeList[i].getPath().equals("/mnt/usb_storage")){
+                externalvolume = volumeList[i];
+		break;
+            }
+        }
+
+
+		//add by xzj to prevent dababase stale in case android.process.media been killed and restart
+        String media_server_flag = SystemProperties.get("service.media_oncekilled","false");
+       if ("true".equals(media_server_flag))
+	   {
+			Log.d(TAG, "android.process.media once been killed,delete record about sdcard and usb in database when restart");
+			synchronized (mDatabases) {
+				  DatabaseHelper database = mDatabases.get(EXTERNAL_VOLUME);
+				  if (database != null) {
+					  try {
+						  for (int i = 0; i < volumeList.length; i++) {
+							  if(volumeList[i].getPath().equals("/mnt/external_sd") || volumeList[i].getPath().equals("/mnt/usb_storage")){
+							  	  StorageVolume storage =volumeList[i];
+								  // don't send objectRemoved events - MTP be sending StorageRemoved anyway
+								  mDisableMtpObjectCallbacks = true;
+								  Log.d(TAG, "deleting all entries for storage " + storage);
+								  SQLiteDatabase db = database.getWritableDatabase();
+								  // First clear the file path to disable the _DELETE_FILE database hook.
+								  // We do this to avoid deleting files if the volume is remounted while
+								  // we are still processing the unmount event.
+								  ContentValues values = new ContentValues();
+								  values.putNull(Files.FileColumns.DATA);
+								  String where = FileColumns.STORAGE_ID + "=?";
+								  String[] whereArgs = new String[] { Integer.toString(storage.getStorageId()) };
+								  database.mNumUpdates++;
+								  db.update("files", values, where, whereArgs);
+								  // now delete the records
+								  database.mNumDeletes++;
+								  int numpurged = db.delete("files", where, whereArgs);
+								  logToDb(db, "removed " + numpurged +
+										  " rows for ejected filesystem " + storage.getPath());
+								  // notify on media Uris as well as the files Uri
+								  context.getContentResolver().notifyChange(
+										  Audio.Media.getContentUri(EXTERNAL_VOLUME), null);
+								  context.getContentResolver().notifyChange(
+										  Images.Media.getContentUri(EXTERNAL_VOLUME), null);
+								  context.getContentResolver().notifyChange(
+										  Video.Media.getContentUri(EXTERNAL_VOLUME), null);
+								  context.getContentResolver().notifyChange(
+										  Files.getContentUri(EXTERNAL_VOLUME), null);
+								  
+							  }
+						  }
+					  } catch (Exception e) {
+						  Log.e(TAG, "exception deleting storage entries", e);
+					  } finally {
+						  mDisableMtpObjectCallbacks = false;
+					  }
+				  }
+			  }
+
+			if (Environment.MEDIA_MOUNTED.equals(mStorageManager.getVolumeState("/mnt/external_sd"))) 
+			{
+			   	Intent intent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.parse("file://" + "/mnt/external_sd"));
+				intent.putExtra("package","RockExplorer");//because Intent.ACTION_MEDIA_MOUNTED can only been send by system
+				getContext().sendBroadcast(intent);
+				Log.d(TAG, "android.process.media once been killed,scan sdcard when restart");
+			}
+
+			if (Environment.MEDIA_MOUNTED.equals(mStorageManager.getVolumeState("/mnt/usb_storage"))) 
+			{
+				Intent intent = new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.parse("file://" + "/mnt/usb_storage"));
+				intent.putExtra("package","RockExplorer");//because Intent.ACTION_MEDIA_MOUNTED can only been send by system
+				getContext().sendBroadcast(intent);
+				Log.d(TAG, "android.process.media once been killed,scan usb when restart");
+			}
+       }
+
         return true;
+    }
+   private void sendStorageIntent(String action,StorageVolume externalvolume) {
+        Intent intent = new Intent(action, Uri.parse("file://" + externalvolume.getPath()));
+        // add StorageVolume extra
+        intent.putExtra(StorageVolume.EXTRA_STORAGE_VOLUME,externalvolume);
+        Log.d(TAG, "sendStorageIntent " + intent);
+        getContext().sendBroadcast(intent);
     }
 
     private static final String TABLE_FILES = "files";
@@ -2786,8 +2893,6 @@ public class MediaProvider extends ContentProvider {
         } else {
             values = initialValues;
         }
-
-        // we used to create the file here, but now defer this until openFile() is called
         return values;
     }
 
@@ -2936,6 +3041,13 @@ public class MediaProvider extends ContentProvider {
             values.put(FileColumns.DATE_MODIFIED, file.lastModified() / 1000);
         }
         helper.mNumInserts++;
+        if (path!=null && path.contains("/mnt/external_sd")) {
+            if (!Environment.MEDIA_MOUNTED.equals(
+                    mStorageManager.getVolumeState("/mnt/external_sd"))) {
+                Log.d(TAG,"-----------------oops,try to insert file to db,but sdcard has been unmounted,file ="+path);
+                return 0;
+            }
+        }
         long rowId = db.insert("files", FileColumns.DATE_MODIFIED, values);
         sendObjectAdded(rowId);
         return rowId;
@@ -2985,7 +3097,20 @@ public class MediaProvider extends ContentProvider {
     }
 
     private int getStorageId(String path) {
-        for (int i = 0; i < mExternalStoragePaths.length; i++) {
+        StorageVolume[] volumeList = mStorageManager.getVolumeList();
+        for (int i = 0; i < volumeList.length; i++) {
+            String volumePath = volumeList[i].getPath();
+            if (path.startsWith(volumePath)) {
+                int length = volumePath.length();
+                if (path.length() == length || path.charAt(length) == '/') {
+                    return volumeList[i].getStorageId();
+                }
+            }
+        }
+        // default to primary storage
+        return MtpStorage.getStorageId(0);
+
+        /*for (int i = 0; i < mExternalStoragePaths.length; i++) {
             String test = mExternalStoragePaths[i];
             if (path.startsWith(test)) {
                 int length = test.length();
@@ -2995,7 +3120,7 @@ public class MediaProvider extends ContentProvider {
             }
         }
         // default to primary storage
-        return MtpStorage.getStorageId(0);
+        return MtpStorage.getStorageId(0);*/
     }
 
     private long insertFile(DatabaseHelper helper, Uri uri, ContentValues initialValues, int mediaType,
@@ -3192,7 +3317,7 @@ public class MediaProvider extends ContentProvider {
                 File file = new File(path);
                 if (file.exists()) {
                     values.put(FileColumns.DATE_MODIFIED, file.lastModified() / 1000);
-                    if (!values.containsKey(FileColumns.SIZE)) {
+                    if (!values.containsKey(FileColumns.SIZE) ||(values.containsKey(FileColumns.SIZE) &&path.contains("DCIM/Camera/IMG_"))){
                         values.put(FileColumns.SIZE, file.length());
                     }
                     // make sure date taken time is set
@@ -3201,6 +3326,9 @@ public class MediaProvider extends ContentProvider {
                         computeTakenTime(values);
                     }
                 }
+            }
+            if (!checkFileExist(path)) {
+                return 0;
             }
 
             Long parent = values.getAsLong(FileColumns.PARENT);
@@ -3235,6 +3363,24 @@ public class MediaProvider extends ContentProvider {
         return rowId;
     }
 
+     private boolean checkFileExist(String path) {
+        int secondSlash = path.indexOf('/', 5);
+        if (secondSlash < 1)
+            return true;
+        String directoryPath = path.substring(0, secondSlash);
+        //Log.d(TAG,directoryPath+"----------------------------CHECK FILE EXIST " + (new File(path).exists()));
+        if (directoryPath != null && (directoryPath.equals("/mnt/external_sd") 
+                || directoryPath.equals("/mnt/usb_storage")))
+        // if files in sdcard ,check sdcard state before insert to db
+        {
+            if (!Environment.MEDIA_MOUNTED.equals(
+                    mStorageManager.getVolumeState(directoryPath))) {
+                Log.d(TAG,"-------oops,try to insert file to db,but sdcard has been unmounted,file ="+ path);
+                return false;
+            }
+        }
+        return true;
+    }
     private Cursor getObjectReferences(DatabaseHelper helper, SQLiteDatabase db, int handle) {
         helper.mNumQueries++;
         Cursor c = db.query("files", sMediaTableColumns, "_id=?",
@@ -3568,6 +3714,17 @@ public class MediaProvider extends ContentProvider {
             case VOLUMES:
             {
                 String name = initialValues.getAsString("name");
+                //add by xzj to prevent attach external-ffffffff.db
+                if (EXTERNAL_VOLUME.equals(name)) {
+                    String state = Environment.getExternalStorageState();
+                    if ((!Environment.MEDIA_MOUNTED.equals(state)) &&
+                         (!Environment.MEDIA_MOUNTED_READ_ONLY.equals(state))) {
+                        //not mounted
+                        Log.d(TAG,"-------------do not attach external.db because flash has not been mounted-----------");
+                        return null;
+                    }
+                }
+
                 Uri attachedVolume = attachVolume(name);
                 if (mMediaScannerVolume != null && mMediaScannerVolume.equals(name)) {
                     DatabaseHelper dbhelper = getDatabaseForUri(attachedVolume);
@@ -3781,7 +3938,8 @@ public class MediaProvider extends ContentProvider {
 //            return Environment.getDataDirectory()
 //                + "/" + directoryName + "/" + name + preferredExtension;
         } else {
-            return mExternalStoragePaths[0] + "/" + directoryName + "/" + name + preferredExtension;
+            String storage = Environment.getExternalStorageDirectory().toString();
+            return storage + "/" + directoryName + "/" + name + preferredExtension;
         }
     }
 
@@ -4808,9 +4966,9 @@ public class MediaProvider extends ContentProvider {
 
     // Extract compressed image data from the audio file itself or, if that fails,
     // look for a file "AlbumArt.jpg" in the containing directory.
-    private static byte[] getCompressedAlbumArt(Context context, String path) {
+    private static byte[] getCompressedAlbumArt(Context context, ThumbData d) {
         byte[] compressed = null;
-
+        String path = d.path;
         try {
             File f = new File(path);
             ParcelFileDescriptor pfd = ParcelFileDescriptor.open(f,
@@ -4830,66 +4988,38 @@ public class MediaProvider extends ContentProvider {
             // 3 Any other jpg image
             // 4 any other png image
             if (compressed == null && path != null) {
+                AlbumObj sAlbum = new AlbumObj(null,d.album_id);
                 int lastSlash = path.lastIndexOf('/');
                 if (lastSlash > 0) {
 
                     String artPath = path.substring(0, lastSlash);
+                    String sdroot = mExternalStoragePaths[0];
                     String dwndir = Environment.getExternalStoragePublicDirectory(
                             Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
 
                     String bestmatch = null;
                     synchronized (sFolderArtMap) {
                         if (sFolderArtMap.containsKey(artPath)) {
-                            bestmatch = sFolderArtMap.get(artPath);
-                        } else if (!isRootStorageDir(artPath) &&
+                            AlbumObj  a = sFolderArtMap.get(artPath);
+                            if (a.albumId==sAlbum.albumId)
+                                bestmatch = sAlbum.match;
+				   //Log.i("hanjiang","path = "+d.path+"    sid = "+a.albumId+"   cid = "+sAlbum.albumId);
+                        } else if (!artPath.equalsIgnoreCase(sdroot) &&
                                 !artPath.equalsIgnoreCase(dwndir)) {
-                            File dir = new File(artPath);
-                            String [] entrynames = dir.list();
-                            if (entrynames == null) {
-                                return null;
-                            }
-                            bestmatch = null;
-                            int matchlevel = 1000;
-                            for (int i = entrynames.length - 1; i >=0; i--) {
-                                String entry = entrynames[i].toLowerCase();
-                                if (entry.equals("albumart.jpg")) {
-                                    bestmatch = entrynames[i];
-                                    break;
-                                } else if (entry.startsWith("albumart")
-                                        && entry.endsWith("large.jpg")
-                                        && matchlevel > 1) {
-                                    bestmatch = entrynames[i];
-                                    matchlevel = 1;
-                                } else if (entry.contains("albumart")
-                                        && entry.endsWith(".jpg")
-                                        && matchlevel > 2) {
-                                    bestmatch = entrynames[i];
-                                    matchlevel = 2;
-                                } else if (entry.endsWith(".jpg") && matchlevel > 3) {
-                                    bestmatch = entrynames[i];
-                                    matchlevel = 3;
-                                } else if (entry.endsWith(".png") && matchlevel > 4) {
-                                    bestmatch = entrynames[i];
-                                    matchlevel = 4;
-                                }
-                            }
-                            // note that this may insert null if no album art was found
-                            sFolderArtMap.put(artPath, bestmatch);
+                            // Log.i("hanjiang","path = "+d.path);
+                            //bestmatch = addBestMatch(artPath,d.album_id);
                         }
                     }
 
                     if (bestmatch != null) {
                         File file = new File(artPath, bestmatch);
                         if (file.exists()) {
+                            compressed = new byte[(int)file.length()];
                             FileInputStream stream = null;
                             try {
-                                compressed = new byte[(int)file.length()];
                                 stream = new FileInputStream(file);
                                 stream.read(compressed);
                             } catch (IOException ex) {
-                                compressed = null;
-                            } catch (OutOfMemoryError ex) {
-                                Log.w(TAG, ex);
                                 compressed = null;
                             } finally {
                                 if (stream != null) {
@@ -4980,8 +5110,48 @@ public class MediaProvider extends ContentProvider {
         return makeThumbInternal(d);
     }
 
+
+    private static String addBestMatch(String artPath,long album_id){
+        File dir = new File(artPath);
+        String [] entrynames = dir.list();
+        if (entrynames == null) {
+            return null;
+        }
+        AlbumObj sAlbum = new AlbumObj(artPath,album_id);
+        String bestmatch = null;
+        int matchlevel = 1000;
+        for (int i = entrynames.length - 1; i >=0; i--) {
+            String entry = entrynames[i].toLowerCase();
+            if (entry.equals("albumart.jpg")) {
+                bestmatch = entrynames[i];
+                break;
+            } else if (entry.startsWith("albumart")
+                    && entry.endsWith("large.jpg")
+                    && matchlevel > 1) {
+                bestmatch = entrynames[i];
+                matchlevel = 1;
+            } else if (entry.contains("albumart")
+                    && entry.endsWith(".jpg")
+                    && matchlevel > 2) {
+                bestmatch = entrynames[i];
+                matchlevel = 2;
+            } else if (entry.endsWith(".jpg") && matchlevel > 3) {
+                bestmatch = entrynames[i];
+                matchlevel = 3;
+            } else if (entry.endsWith(".png") && matchlevel > 4) {
+                bestmatch = entrynames[i];
+                matchlevel = 4;
+            }
+        }
+                // note that this may insert null if no album art was found
+        sAlbum.match = bestmatch;
+        sFolderArtMap.put(artPath, sAlbum);
+	return bestmatch;
+    }
+
+	
     private ParcelFileDescriptor makeThumbInternal(ThumbData d) {
-        byte[] compressed = getCompressedAlbumArt(getContext(), d.path);
+        byte[] compressed = getCompressedAlbumArt(getContext(), d);
 
         if (compressed == null) {
             return null;
@@ -5044,33 +5214,37 @@ public class MediaProvider extends ContentProvider {
             // that could go wrong while generating the thumbnail, and we only want
             // to update the database when all steps succeeded.
             d.db.beginTransaction();
-            Uri out = null;
-            ParcelFileDescriptor pfd = null;
             try {
-                out = getAlbumArtOutputUri(d.helper, d.db, d.album_id, d.albumart_uri);
+                Uri out = getAlbumArtOutputUri(d.helper, d.db, d.album_id, d.albumart_uri);
 
                 if (out != null) {
                     writeAlbumArt(need_to_recompress, out, compressed, bm);
+			
+                    synchronized (sFolderArtMap) {
+                        int lastSlash =d. path.lastIndexOf('/');
+                        if (lastSlash > 0) {
+                            String artPath = d.path.substring(0, lastSlash);
+                            if (false==sFolderArtMap.containsKey(artPath)) {
+                                    addBestMatch(artPath,d.album_id);
+                            }
+                        }
+
+                    }
                     getContext().getContentResolver().notifyChange(MEDIA_URI, null);
-                    pfd = openFileHelper(out, "r");
+                    ParcelFileDescriptor pfd = openFileHelper(out, "r");
                     d.db.setTransactionSuccessful();
                     return pfd;
                 }
-            } catch (IOException ex) {
+            } catch (FileNotFoundException ex) {
                 // do nothing, just return null below
             } catch (UnsupportedOperationException ex) {
                 // do nothing, just return null below
+            } catch(Exception e) {
+
             } finally {
                 d.db.endTransaction();
                 if (bm != null) {
                     bm.recycle();
-                }
-                if (pfd == null && out != null) {
-                    // Thumbnail was not written successfully, delete the entry that refers to it.
-                    // Note that this only does something if getAlbumArtOutputUri() reused an
-                    // existing entry from the database. If a new entry was created, it will
-                    // have been rolled back as part of backing out the transaction.
-                    getContext().getContentResolver().delete(out, null, null);
                 }
             }
         }
@@ -5278,6 +5452,9 @@ public class MediaProvider extends ContentProvider {
      * @return the content URI of the attached volume.
      */
     private Uri attachVolume(String volume) {
+        synchronized (sFolderArtMap) {
+            sFolderArtMap.clear();
+        }
         if (Binder.getCallingPid() != Process.myPid()) {
             throw new SecurityException(
                     "Opening and closing databases not allowed.");
@@ -5295,37 +5472,76 @@ public class MediaProvider extends ContentProvider {
                         false, mObjectRemovedCallback);
             } else if (EXTERNAL_VOLUME.equals(volume)) {
                 if (Environment.isExternalStorageRemovable()) {
-                    final StorageVolume actualVolume = mStorageManager.getPrimaryVolume();
-                    final int volumeId = actualVolume.getFatVolumeId();
+                    String path = mExternalStoragePaths[0];
+                    //int volumeID = FileUtils.getFatVolumeId(path);
+                    int volumeID = -1;
+                    if (LOCAL_LOGV) Log.v(TAG, path + " volume ID: " + volumeID);
 
-                    // Must check for failure!
-                    // If the volume is not (yet) mounted, this will create a new
-                    // external-ffffffff.db database instead of the one we expect.  Then, if
-                    // android.process.media is later killed and respawned, the real external
-                    // database will be attached, containing stale records, or worse, be empty.
-                    if (volumeId == -1) {
-                        String state = Environment.getExternalStorageState();
-                        if (Environment.MEDIA_MOUNTED.equals(state) ||
-                                Environment.MEDIA_MOUNTED_READ_ONLY.equals(state)) {
-                            // This may happen if external storage was _just_ mounted.  It may also
-                            // happen if the volume ID is _actually_ 0xffffffff, in which case it
-                            // must be changed since FileUtils::getFatVolumeId doesn't allow for
-                            // that.  It may also indicate that FileUtils::getFatVolumeId is broken
-                            // (missing ioctl), which is also impossible to disambiguate.
-                            Log.e(TAG, "Can't obtain external volume ID even though it's mounted.");
-                        } else {
-                            Log.i(TAG, "External volume is not (yet) mounted, cannot attach.");
-                        }
+					String enableUms= SystemProperties.get("ro.factory.hasUMS","false");
+                    if ("true".equals(enableUms)) //has UMS,flash partition  is the primary storage
+					{
+	                    final StorageVolume actualVolume = mStorageManager.getPrimaryVolume();
+	                    volumeID = -1;//actualVolume.getFatVolumeId();
 
-                        throw new IllegalArgumentException("Can't obtain external volume ID for " +
-                                volume + " volume.");
+	                    // Must check for failure!
+	                    // If the volume is not (yet) mounted, this will create a new
+	                    // external-ffffffff.db database instead of the one we expect.  Then, if
+	                    // android.process.media is later killed and respawned, the real external
+	                    // database will be attached, containing stale records, or worse, be empty.
+	                    if (actualVolume.getFatVolumeId() == -1) {
+	                        String state = Environment.getExternalStorageState();
+	                        if (Environment.MEDIA_MOUNTED.equals(state) ||
+	                                Environment.MEDIA_MOUNTED_READ_ONLY.equals(state)) {
+	                            // This may happen if external storage was _just_ mounted.  It may also
+	                            // happen if the volume ID is _actually_ 0xffffffff, in which case it
+	                            // must be changed since FileUtils::getFatVolumeId doesn't allow for
+	                            // that.  It may also indicate that FileUtils::getFatVolumeId is broken
+	                            // (missing ioctl), which is also impossible to disambiguate.
+	                             Log.e(TAG, "Can't obtain external volume ID even though it's mounted,Maybe Ntfs accept it");
+	                        } else {
+								Log.i(TAG, "External volume is not (yet) mounted, cannot attach.throw exception");
+								throw new IllegalArgumentException("Can't obtain external volume ID for " +
+									 volume + " volume.");
+	                        }
+	                    }
+
                     }
+					else//disable UMS,must be emulated storage
+					{
+				        //do not check this if merge data and flash partition
+                        Log.d(TAG,"----disable UMS,must be emulated storage,do not check volumeID---");
+					
+	                   /* final StorageVolume actualVolume = storageManager.getPrimaryVolume();
+	                    volumeID = -1;//actualVolume.getFatVolumeId();
+
+	                    // Must check for failure!
+	                    // If the volume is not (yet) mounted, this will create a new
+	                    // external-ffffffff.db database instead of the one we expect.  Then, if
+	                    // android.process.media is later killed and respawned, the real external
+	                    // database will be attached, containing stale records, or worse, be empty.
+	                    if (actualVolume.getFatVolumeId() == -1) {
+	                        String state = Environment.getExternalStorageState();
+	                        if (Environment.MEDIA_MOUNTED.equals(state) ||
+	                                Environment.MEDIA_MOUNTED_READ_ONLY.equals(state)) {
+	                            // This may happen if external storage was _just_ mounted.  It may also
+	                            // happen if the volume ID is _actually_ 0xffffffff, in which case it
+	                            // must be changed since FileUtils::getFatVolumeId doesn't allow for
+	                            // that.  It may also indicate that FileUtils::getFatVolumeId is broken
+	                            // (missing ioctl), which is also impossible to disambiguate.
+	                             Log.e(TAG, "Can't obtain external volume ID even though it's mounted,Maybe Ntfs accept it");
+	                        } else {
+								Log.i(TAG, "External volume is not (yet) mounted, cannot attach.throw exception");
+								throw new IllegalArgumentException("Can't obtain external volume ID for " +
+									 volume + " volume.");
+	                        }
+	                    }*/
+					}
 
                     // generate database name based on volume ID
-                    String dbName = "external-" + Integer.toHexString(volumeId) + ".db";
+                    String dbName = "external-" + Integer.toHexString(volumeID) + ".db";
                     helper = new DatabaseHelper(context, dbName, false,
                             false, mObjectRemovedCallback);
-                    mVolumeId = volumeId;
+                    mVolumeId = volumeID;
                 } else {
                     // external database name should be EXTERNAL_DATABASE_NAME
                     // however earlier releases used the external-XXXXXXXX.db naming
@@ -5456,7 +5672,7 @@ public class MediaProvider extends ContentProvider {
     private static final String EXTERNAL_DATABASE_NAME = "external.db";
 
     // maximum number of cached external databases to keep
-    private static final int MAX_EXTERNAL_DATABASES = 3;
+    private static final int MAX_EXTERNAL_DATABASES = 6;
 
     // Delete databases that have not been used in two months
     // 60 days in milliseconds (1000 * 60 * 60 * 24 * 60)
