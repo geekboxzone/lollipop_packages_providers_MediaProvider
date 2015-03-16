@@ -705,7 +705,7 @@ public class MediaProvider extends ContentProvider {
         StorageVolume[] volumeList = mStorageManager.getVolumeList();
         StorageVolume externalvolume = null;
         for (int i = 0; i < volumeList.length; i++) {
-            if(volumeList[i].getPath().equals("/mnt/external_sd") || volumeList[i].getPath().equals("/mnt/usb_storage")){
+            if(volumeList[i].getPath().equals("/mnt/external_sd") || volumeList[i].getPath().startsWith("/mnt/usb_storage")){
                 externalvolume = volumeList[i];
 		break;
             }
@@ -722,7 +722,7 @@ public class MediaProvider extends ContentProvider {
 				  if (database != null) {
 					  try {
 						  for (int i = 0; i < volumeList.length; i++) {
-							  if(volumeList[i].getPath().equals("/mnt/external_sd") || volumeList[i].getPath().equals("/mnt/usb_storage")){
+							  if(volumeList[i].getPath().equals("/mnt/external_sd") || volumeList[i].getPath().startsWith("/mnt/usb_storage")){
 							  	  StorageVolume storage =volumeList[i];
 								  // don't send objectRemoved events - MTP be sending StorageRemoved anyway
 								  mDisableMtpObjectCallbacks = true;
@@ -3388,10 +3388,19 @@ public class MediaProvider extends ContentProvider {
         int secondSlash = path.indexOf('/', 5);
         if (secondSlash < 1)
             return true;
-        String directoryPath = path.substring(0, secondSlash);
+        String directoryPath = null;//path.substring(0, secondSlash);
+        StorageVolume[] volumeList = mStorageManager.getVolumeList();
+        for (int i = 0; i < volumeList.length; i++) {
+            String volumePath = volumeList[i].getPath();
+            if (path.startsWith(volumePath)) {
+                int length = volumePath.length();
+                directoryPath = volumePath;
+             }
+         }
+      
         //Log.d(TAG,directoryPath+"----------------------------CHECK FILE EXIST " + (new File(path).exists()));
         if (directoryPath != null && (directoryPath.equals("/mnt/external_sd") 
-                || directoryPath.equals("/mnt/usb_storage")))
+                || directoryPath.startsWith("/mnt/usb_storage")))
         // if files in sdcard ,check sdcard state before insert to db
         {
             if (!Environment.MEDIA_MOUNTED.equals(
