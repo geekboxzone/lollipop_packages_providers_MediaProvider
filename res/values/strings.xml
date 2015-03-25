@@ -44,4 +44,7 @@
     <!-- Title for documents backend that offers audio. [CHAR LIMIT=24] -->
     <string name="root_audio">Audio</string>
 
+	<!-- Add more ringtong from SD card -->
+    <string name="add_more_ringtones">More Ringtones ...</string>
+
 </resources>

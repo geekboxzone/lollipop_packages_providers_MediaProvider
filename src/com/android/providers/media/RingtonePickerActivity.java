@@ -35,6 +35,14 @@ import android.widget.TextView;
 import com.android.internal.app.AlertActivity;
 import com.android.internal.app.AlertController;
 
+import android.content.Context;
+import android.content.ContentResolver;
+import android.content.ContentValues;
+
+import android.widget.HeaderViewListAdapter;
+import android.widget.ListAdapter;
+import android.widget.SimpleCursorAdapter;
+
 /**
  * The {@link RingtonePickerActivity} allows the user to choose one from all of the
  * available ringtones. The chosen ringtone's URI will be persisted as a string.
@@ -52,6 +60,8 @@ public final class RingtonePickerActivity extends AlertActivity implements
     private static final int DELAY_MS_SELECTION_PLAYED = 300;
 
     private static final String SAVE_CLICKED_POS = "clicked_pos";
+
+	private static final int ADD_MORE_RINGTONES = 1;
 
     private RingtoneManager mRingtoneManager;
     private int mType;
@@ -86,6 +96,13 @@ public final class RingtonePickerActivity extends AlertActivity implements
     /** The Uri to play when the 'Default' item is clicked. */
     private Uri mUriForDefaultItem;
 
+	/** Whether this list has the 'More Ringtongs' item. */
+    private boolean mHasMoreRingtonesItem = false;
+    
+    /** The position in the list of the 'More Ringtongs' item. */
+    private int mMoreRingtonesPos = -1;
+
+
     /**
      * A Ringtone for the default ringtone. In most cases, the RingtoneManager
      * will stop the previous ringtone. However, the RingtoneManager doesn't
@@ -112,11 +129,22 @@ public final class RingtonePickerActivity extends AlertActivity implements
          * On item clicked
          */
         public void onClick(DialogInterface dialog, int which) {
+			if (which == mMoreRingtonesPos){
+                //Show MusicPicker activity to let user choose song to be ringtone 
+                Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                intent.addCategory(Intent.CATEGORY_DEFAULT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("audio/*");
+                intent.setType("application/ogg");
+                intent.setType("application/x-ogg");
+                startActivityForResult(intent, ADD_MORE_RINGTONES);
+            } else {
             // Save the position of most recently clicked item
             mClickedPos = which;
 
             // Play clip
             playRingtone(which, 0);
+			}
         }
 
     };
@@ -144,6 +172,10 @@ public final class RingtonePickerActivity extends AlertActivity implements
         }
         // Get whether to show the 'Silent' item
         mHasSilentItem = intent.getBooleanExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true);
+
+		// Get whether to show the 'More Ringtones' item
+        mHasMoreRingtonesItem = intent.getBooleanExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_MORE_RINGTONES, false);
+
 
         // Give the Activity so it can do managed queries
         mRingtoneManager = new RingtoneManager(this);
@@ -198,6 +230,11 @@ public final class RingtonePickerActivity extends AlertActivity implements
             }
         }
 
+		// Add "More Ringtone" to the top of listview to let user choose more ringtone
+        if (mHasMoreRingtonesItem) {
+            mMoreRingtonesPos = addMoreRingtonesItem(listView);
+        }
+
         if (mHasSilentItem) {
             mSilentPos = addSilentItem(listView);
 
@@ -245,6 +282,16 @@ public final class RingtonePickerActivity extends AlertActivity implements
     private int addSilentItem(ListView listView) {
         return addStaticItem(listView, com.android.internal.R.string.ringtone_silent);
     }
+
+	private int addMoreRingtonesItem(ListView listView) {
+        TextView textView = (TextView) getLayoutInflater().inflate(
+                com.android.internal.R.layout.simple_list_item_1, listView, false);
+        textView.setText(R.string.add_more_ringtones);
+        listView.addHeaderView(textView);
+        mStaticItemCount++;
+        return listView.getHeaderViewsCount() - 1;
+    }
+
 
     /*
      * On click of Ok/Cancel buttons
@@ -381,6 +428,78 @@ public final class RingtonePickerActivity extends AlertActivity implements
         if (ringtoneManagerPos < 0) return ringtoneManagerPos;
 
         return ringtoneManagerPos + mStaticItemCount;
+    }
+
+	@Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent intent) {
+        switch (requestCode) {
+            case ADD_MORE_RINGTONES:
+                ListView listView = mAlert.getListView();
+                if (null == listView) {
+                    return;
+                }
+                if (resultCode == RESULT_OK) {
+                    Uri uri = (null == intent ? null : intent.getData());
+                    if (uri != null ) {
+                        setRingtone(this, uri);
+                        
+                    }
+                    // Reset the checked position after choosing a song to be ringtone
+                    ListAdapter adapter = listView.getAdapter();
+                    ListAdapter headAdapter = adapter;
+                    if (null != headAdapter && (headAdapter instanceof HeaderViewListAdapter)) {
+                        // Get the cursor adapter with the listview
+                        adapter = ((HeaderViewListAdapter) headAdapter).getWrappedAdapter();
+                        mCursor = mRingtoneManager.getNewCursor();
+                        ((SimpleCursorAdapter) adapter).swapCursor(mCursor);
+						listView.setAdapter(adapter);
+                    } else {
+                        Log.e(TAG, "onActivityResult: cursor adapter is null!");
+                    }
+                    // Get position from ringtone list with this uri, if the return position is
+                    // valid value, set it to be current clicked position
+                    int position = getListPosition(mRingtoneManager.getRingtonePosition(uri));
+
+
+                    if (position != -1) {
+                        mClickedPos = position;
+                        mAlertParams.mCheckedItem = mClickedPos;
+                    } else {
+                        //Log.w(TAG, "onActivityResult: get position is invalid!");
+                    }
+                } else {
+                   // Log.v(TAG, "onActivityResult: Cancel to choose more ringtones, so do nothing!");
+                }
+                listView.setItemChecked(mClickedPos, true);
+                listView.setSelection(mClickedPos);
+                //Log.d(TAG, "onActivityResult: set position to be checked: mClickedPos = "
+                //        + mClickedPos);
+                break;
+        }
+    }
+
+	private void setRingtone(Context context, Uri uri) {
+        ContentResolver resolver = context.getContentResolver();
+        // Set the flag in the database to mark this as a ringtone
+        try {
+            if (mType == -1) {
+                return;
+            }
+            ContentValues values = new ContentValues(1);
+            if ((RingtoneManager.TYPE_RINGTONE == mType)) {
+                values.put(MediaStore.Audio.Media.IS_RINGTONE, "1");
+            } else if (RingtoneManager.TYPE_ALARM == mType) {
+                values.put(MediaStore.Audio.Media.IS_ALARM, "1");
+            } else if (RingtoneManager.TYPE_NOTIFICATION == mType) {
+                values.put(MediaStore.Audio.Media.IS_NOTIFICATION, "1");
+            } else {
+                return;
+            }
+            resolver.update(uri, values, null, null);
+        } catch (UnsupportedOperationException ex) {
+            // most likely the card just got unmounted
+            return;
+        }
     }
 
 }
