@@ -3052,6 +3052,10 @@ public class MediaProvider extends ContentProvider {
 
     private long insertDirectory(DatabaseHelper helper, SQLiteDatabase db, String path) {
         if (LOCAL_LOGV) Log.v(TAG, "inserting directory " + path);
+        // Don't insert Intel's Coredump to android media database, ignore it.
+        // Just an workaround, Coredump should also write a ".nomedia" file.
+        if (path.contains("/mnt/external_sd/Coredump"))
+            return 0;
         ContentValues values = new ContentValues();
         values.put(FileColumns.FORMAT, MtpConstants.FORMAT_ASSOCIATION);
         values.put(FileColumns.DATA, path);
