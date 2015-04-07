@@ -173,8 +173,12 @@ public class MtpService extends Service {
         final boolean isCurrentUser = UserHandle.myUserId() == ActivityManager.getCurrentUser();
         final KeyguardManager keyguardManager = (KeyguardManager) getSystemService(
                 Context.KEYGUARD_SERVICE);
-        mMtpDisabled = (keyguardManager.isKeyguardLocked() && keyguardManager.isKeyguardSecure())
+        boolean newMtpDisabled = (keyguardManager.isKeyguardLocked() && keyguardManager.isKeyguardSecure())
                 || !isCurrentUser;
+        if (mMtpDisabled != newMtpDisabled) {
+            mMtpDisabled = newMtpDisabled;
+            addStorageDevicesLocked();
+        }
         if (LOGD) {
             Log.d(TAG, "updating state; isCurrentUser=" + isCurrentUser + ", mMtpLocked="
                     + mMtpDisabled);
