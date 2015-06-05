@@ -46,7 +46,7 @@ public class MtpReceiver extends BroadcastReceiver {
 
     private void handleUsbState(Context context, Intent intent) {
         Bundle extras = intent.getExtras();
-        boolean connected = extras.getBoolean(UsbManager.USB_CONFIGURED);
+        boolean connected = extras.getBoolean(UsbManager.USB_CONNECTED);
         boolean mtpEnabled = extras.getBoolean(UsbManager.USB_FUNCTION_MTP);
         boolean ptpEnabled = extras.getBoolean(UsbManager.USB_FUNCTION_PTP);
     Log.d("xzj",connected+"---------------------------ooooooooooo,stop mtp service---------------"+mtpEnabled);
